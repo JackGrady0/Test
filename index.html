@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>姆明风涂鸦跳跃 · 9:16</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #dfeef7; /* 柔和天空色 */
+      height: 100%;
+      overflow: hidden;
+      -webkit-user-select: none; user-select: none;
+      touch-action: none;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, PingFang SC, Noto Sans SC, Arial, sans-serif;
+    }
+    #wrap { position: fixed; inset: 0; display: grid; place-items: center; }
+    canvas { display: block; background: linear-gradient(#dfeef7, #f7fbff); border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.08); }
+    .overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(255,255,255,.85); }
+    .panel { width: min(92vw, 380px); background: #ffffff; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,.12); padding: 20px; text-align: center; }
+    .panel h1 { margin: 0 0 8px; font-size: 20px; }
+    .panel p { margin: 6px 0; color: #444; font-size: 14px; }
+    .btn { margin-top: 12px; padding: 12px 16px; border: 0; border-radius: 12px; background: #5aa9e6; color: #fff; font-size: 16px; font-weight: 600; }
+    .bar { position:absolute; top: 6px; left: 10px; right: 10px; display:flex; justify-content:space-between; font-weight:700; color:#234; text-shadow: 0 1px 0 #fff; }
+    .tag { background: rgba(255,255,255,.75); padding:6px 10px; border-radius:12px; }
+    .rotate-tip { position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.55); color:#fff; text-align:center; padding:20px; }
+    .rotate-tip.show { display:flex; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game"></canvas>
+    <div id="hud" class="bar" style="display:none">
+      <div class="tag">分数 <span id="score">0</span></div>
+      <div class="tag">最高 <span id="best">0</span></div>
+    </div>
+    <div id="overlay" class="overlay">
+      <div class="panel">
+        <h1>姆明风涂鸦跳跃</h1>
+        <p>竖屏 9:16 · 倾斜手机左右操控</p>
+        <p>点击开始并允许“运动与方向”权限</p>
+        <button id="start" class="btn">开始游戏</button>
+      </div>
+    </div>
+    <div id="gameover" class="overlay" style="display:none">
+      <div class="panel">
+        <h1>游戏结束</h1>
+        <p>得分：<b id="finalScore">0</b></p>
+        <p>最高：<b id="finalBest">0</b></p>
+        <button id="again" class="btn">再来一局</button>
+      </div>
+    </div>
+    <div id="rotateTip" class="rotate-tip">请保持竖屏体验本游戏</div>
+  </div>
+
+  <script>
+  // ====== 基本尺寸：保持 9:16 画布 ======
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const hud = document.getElementById('hud');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const overlay = document.getElementById('overlay');
+  const gameover = document.getElementById('gameover');
+  const startBtn = document.getElementById('start');
+  const againBtn = document.getElementById('again');
+  const rotateTip = document.getElementById('rotateTip');
+
+  let DPR = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+  const BASE_W = 360; // 9:16 基准
+  const BASE_H = 640;
+
+  function fitCanvas() {
+    // 以窗口短边适配，强制 9:16
+    const W = window.innerWidth, H = window.innerHeight;
+    let w = W, h = Math.round(W * 16/9);
+    if (h > H) { h = H; w = Math.round(H * 9/16); }
+    DPR = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    canvas.width = w * DPR; 
+    canvas.height = h * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0); // 用 CSS 尺寸作逻辑像素
+  }
+  fitCanvas();
+  window.addEventListener('resize', fitCanvas);
+
+  // 横竖屏提示
+  function updateOrientationTip(){
+    const isPortrait = window.matchMedia('(orientation: portrait)').matches || window.innerHeight >= window.innerWidth;
+    rotateTip.classList.toggle('show', !isPortrait);
+  }
+  updateOrientationTip();
+  window.addEventListener('orientationchange', updateOrientationTip);
+  window.addEventListener('resize', updateOrientationTip);
+
+  // ====== 工具 ======
+  function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+  function rand(a, b){ return a + Math.random()*(b-a); }
+  function irand(a, b){ return Math.floor(rand(a,b)); }
+
+  // ====== 游戏参数 ======
+  const G = 0.35;           // 重力
+  const JUMP = 10.5;        // 基础跳跃力
+  const BOOST_JUMP = 15.5;  // 弹簧鞋跳跃力
+  const MAX_VX = 5.2;       // 最大水平速度（倾斜映射）
+  const TILT_MAX = 30;      // 最大映射角度 |gamma|
+  const WORLD_W = () => canvas.clientWidth; // 逻辑宽
+  const WORLD_H = () => canvas.clientHeight; // 逻辑高
+
+  const PLATFORM_W = 64; const PLATFORM_H = 14;
+  const PLAYER_W = 42; const PLAYER_H = 54;
+
+  // 道具持续
+  const SPRING_SHOES_JUMPS = 3;
+  const JETPACK_TIME = 1600; // ms
+
+  // 敌人参数
+  const ENEMY_W = 36, ENEMY_H = 28;
+
+  // 难度与生成
+  const INIT_PLATFORMS = 7; // 屏内平台数
+
+  // ====== 世界对象 ======
+  let state = 'idle'; // idle | playing | over
+  let score = 0; let best = Number(localStorage.getItem('moomin_best')||0);
+  bestEl.textContent = best;
+  let cameraY = 0; // 摄像机上移量（逻辑坐标）
+
+  const input = {
+    tiltZero: 0,
+    gamma: 0,
+    vx: 0,
+    smoothing: 0.18, // 低通滤波
+    useGyro: true,
+    keyLeft: false,
+    keyRight: false,
+  };
+
+  class Player {
+    constructor(){
+      this.x = WORLD_W()/2 - PLAYER_W/2;
+      this.y = WORLD_H() - 100;
+      this.vx = 0; this.vy = -JUMP; // 初始一跳
+      this.dir = 1; // 1 右, -1 左
+      this.springJumps = 0;
+      this.jetpackEnd = 0;
+      this.shield = false; // 可选
+      this.alive = true;
+    }
+    get jumpPower(){ return this.springJumps>0 ? BOOST_JUMP : JUMP; }
+    jump(power){
+      this.vy = -power;
+      if(this.springJumps>0) this.springJumps--;
+    }
+    update(dt){
+      // 陀螺仪/键盘 控制水平
+      let targetVX = 0;
+      if (input.useGyro) {
+        targetVX = clamp((input.gamma - input.tiltZero)/TILT_MAX, -1, 1) * MAX_VX;
+      }
+      // 桌面回退: 键盘
+      if (input.keyLeft) targetVX = -MAX_VX;
+      if (input.keyRight) targetVX = MAX_VX;
+
+      this.vx += (targetVX - this.vx) * input.smoothing;
+      this.x += this.vx;
+
+      // 水平环绕
+      const w = WORLD_W();
+      if (this.x > w) this.x = -PLAYER_W;
+      if (this.x + PLAYER_W < 0) this.x = w;
+
+      // Jetpack 推进
+      const now = performance.now();
+      const jetOn = now < this.jetpackEnd;
+      if (jetOn) {
+        this.vy = -Math.max(this.jumpPower*1.5, 18);
+      } else {
+        // 重力
+        this.vy += G;
+      }
+      this.y += this.vy;
+
+      // 朝向
+      if (this.vx > 0.1) this.dir = 1; else if (this.vx < -0.1) this.dir = -1;
+
+      // 摄像机跟随（上升时）
+      const screenY = this.y - cameraY;
+      const mid = WORLD_H()*0.45; // 角色保持在屏幕中下部
+      if (screenY < mid) {
+        cameraY -= (mid - screenY);
+        score += Math.floor((mid - screenY));
+        if (score < 0) score = 0;
+      }
+
+      // 掉出底部：游戏结束
+      if (this.y - cameraY > WORLD_H() + 60) {
+        this.alive = false;
+      }
+    }
+    draw(){
+      const x = this.x, y = this.y - cameraY;
+      // 绘制“姆明风”简笔角色：白色圆润身躯 + 轻描边
+      ctx.save();
+      ctx.translate(x + PLAYER_W/2, y + PLAYER_H/2);
+      // 轻微摆动
+      ctx.rotate(this.vx * 0.03);
+
+      // 阴影
+      ctx.fillStyle = 'rgba(0,0,0,0.08)';
+      ctx.beginPath(); ctx.ellipse(-2, PLAYER_H/2 - 4, PLAYER_W*0.45, 6, 0, 0, Math.PI*2); ctx.fill();
+
+      // 身体
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#3a4a5a';
+      ctx.fillStyle = '#ffffff';
+      roundedRect(-PLAYER_W/2, -PLAYER_H/2, PLAYER_W, PLAYER_H, 14, true, true);
+
+      // 鼻子（朝向）
+      ctx.beginPath();
+      const noseX = this.dir>0 ? PLAYER_W*0.22 : -PLAYER_W*0.22;
+      ctx.ellipse(noseX, -6, 10, 7, 0, 0, Math.PI*2);
+      ctx.fillStyle = '#f5f7f9'; ctx.fill(); ctx.stroke();
+
+      // 眼睛
+      ctx.fillStyle = '#2a3642';
+      const eyeDX = this.dir>0 ? 8 : -8;
+      ctx.beginPath(); ctx.arc(eyeDX, -10, 2.2, 0, Math.PI*2); ctx.fill();
+
+      // 耳朵
+      ctx.fillStyle = '#fff';
+      ear(-PLAYER_W*0.2, -PLAYER_H*0.45);
+      ear( PLAYER_W*0.2, -PLAYER_H*0.45);
+
+      // 尾巴
+      ctx.beginPath();
+      ctx.moveTo(-PLAYER_W*0.35*this.dir, PLAYER_H*0.2);
+      ctx.quadraticCurveTo(-PLAYER_W*0.45*this.dir, 0, -PLAYER_W*0.3*this.dir, -8);
+      ctx.stroke();
+
+      // 弹簧鞋提示
+      if (this.springJumps>0){
+        ctx.fillStyle = '#5aa9e6';
+        ctx.fillRect(-PLAYER_W*0.25, PLAYER_H*0.45, PLAYER_W*0.5, 3);
+      }
+      // 护盾提示
+      if (this.shield){
+        ctx.strokeStyle = 'rgba(90,169,230,.7)';
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.ellipse(0, 0, PLAYER_W*0.6, PLAYER_H*0.6, 0, 0, Math.PI*2); ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+  }
+
+  function ear(ex, ey){
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.quadraticCurveTo(ex-6, ey-16, ex, ey-12);
+    ctx.quadraticCurveTo(ex+6, ey-16, ex, ey);
+    ctx.fill(); ctx.stroke();
+  }
+
+  function roundedRect(x, y, w, h, r, fill, stroke){
+    ctx.beginPath();
+    ctx.moveTo(x+r, y);
+    ctx.arcTo(x+w, y, x+w, y+h, r);
+    ctx.arcTo(x+w, y+h, x, y+h, r);
+    ctx.arcTo(x, y+h, x, y, r);
+    ctx.arcTo(x, y, x+w, y, r);
+    if (fill) ctx.fill();
+    if (stroke) ctx.stroke();
+  }
+
+  class Platform {
+    constructor(x,y,type='normal'){
+      this.x = x; this.y = y; this.type = type; // normal | move | break
+      this.w = PLATFORM_W; this.h = PLATFORM_H;
+      this.vx = (type==='move') ? (Math.random()<0.5?-0.8:0.8) : 0;
+      this.broken = false;
+      // 是否携带道具
+      this.item = null; // {type:'spring'|'shoes'|'jet', x,y}
+      if (Math.random() < 0.14 && type!=='break') {
+        const t = Math.random();
+        if (t < 0.5) this.item = {type:'spring', x:this.x+this.w/2-8, y:this.y-10};
+        else if (t < 0.85) this.item = {type:'shoes', x:this.x+this.w/2-8, y:this.y-10};
+        else this.item = {type:'jet', x:this.x+this.w/2-8, y:this.y-12};
+      }
+    }
+    update(){
+      if (this.type==='move'){
+        this.x += this.vx;
+        if (this.x<8 || this.x+this.w>WORLD_W()-8) this.vx*=-1;
+        if (this.item){ this.item.x = this.x+this.w/2-8; }
+      }
+    }
+    draw(){
+      const scrY = this.y - cameraY;
+      // 云朵/木板风
+      ctx.save();
+      ctx.translate(this.x, scrY);
+      // 平台底阴影
+      ctx.fillStyle = 'rgba(0,0,0,0.05)';
+      ctx.fillRect(2, this.h-2, this.w-4, 3);
+      let fill = '#bfe3ff', stroke = '#4f7ea8';
+      if (this.type==='move'){ fill='#c4f1d4'; stroke='#3b8060'; }
+      if (this.type==='break'){ fill='#f6d4d4'; stroke='#a65a5a'; }
+      ctx.lineWidth = 2; ctx.strokeStyle = stroke; ctx.fillStyle = fill;
+      roundedRect(0, 0, this.w, this.h, 6, true, true);
+
+      // 裂纹提示
+      if (this.type==='break'){
+        ctx.strokeStyle = '#a65a5a';
+        ctx.beginPath();
+        ctx.moveTo(this.w*0.2, 3); ctx.lineTo(this.w*0.5, this.h-3); ctx.lineTo(this.w*0.8, 3);
+        ctx.stroke();
+      }
+
+      // 道具绘制
+      if (this.item){
+        drawItem(this.item);
+      }
+      ctx.restore();
+    }
+  }
+
+  function drawItem(it){
+    ctx.save();
+    ctx.translate(it.x, it.y - cameraY);
+    if (it.type==='spring'){
+      ctx.lineWidth = 2; ctx.strokeStyle = '#7a7a7a';
+      ctx.beginPath();
+      for (let i=0;i<4;i++){ ctx.moveTo(0+i*4, 0); ctx.lineTo(8+i*4, -10); }
+      ctx.stroke();
+    } else if (it.type==='shoes'){
+      ctx.fillStyle = '#5aa9e6'; ctx.strokeStyle = '#2f6f9f'; ctx.lineWidth=2;
+      roundedRect(-8, -8, 16, 10, 4, true, true);
+    } else if (it.type==='jet'){
+      ctx.fillStyle = '#ff826e'; ctx.strokeStyle = '#a84b3d'; ctx.lineWidth=2;
+      roundedRect(-8, -10, 16, 20, 5, true, true);
+      // 火焰
+      ctx.fillStyle = 'rgba(255,140,0,.7)';
+      ctx.beginPath(); ctx.moveTo(0, 10); ctx.quadraticCurveTo(4, 18, 0, 24); ctx.quadraticCurveTo(-4, 18, 0, 10); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  class Enemy {
+    constructor(x,y){ this.x=x; this.y=y; this.w=ENEMY_W; this.h=ENEMY_H; this.vx = Math.random()<0.5?-0.6:0.6; this.phase = Math.random()*Math.PI*2; }
+    update(){
+      this.x += this.vx;
+      if (this.x<8 || this.x+this.w>WORLD_W()-8) this.vx*=-1;
+      // 轻微上下浮动
+      this.phase += 0.02; this.y += Math.sin(this.phase)*0.3;
+    }
+    draw(){
+      const y = this.y - cameraY;
+      ctx.save(); ctx.translate(this.x + this.w/2, y + this.h/2);
+      // 身体
+      ctx.fillStyle = '#3e3a59'; ctx.strokeStyle = '#231f3a'; ctx.lineWidth=2;
+      roundedRect(-this.w/2, -this.h/2, this.w, this.h, 8, true, true);
+      // 眼睛
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-6, -3, 3, 0, Math.PI*2); ctx.arc(6, -3, 3, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(-6, -3, 1.5, 0, Math.PI*2); ctx.arc(6, -3, 1.5, 0, Math.PI*2); ctx.fill();
+      // 翅膀
+      ctx.strokeStyle = 'rgba(255,255,255,.7)';
+      ctx.beginPath(); ctx.moveTo(-this.w/2-4, 0); ctx.quadraticCurveTo(-this.w/2-14, -8, -this.w/2-4, -12); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(this.w/2+4, 0); ctx.quadraticCurveTo(this.w/2+14, -8, this.w/2+4, -12); ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // ====== 世界容器 ======
+  let player; let platforms=[]; let enemies=[];
+
+  function resetWorld(){
+    score = 0; scoreEl.textContent = '0';
+    cameraY = 0;
+    player = new Player();
+    platforms.length = 0; enemies.length = 0;
+
+    // 初始平台自下而上等距
+    const gap = Math.floor(WORLD_H()/INIT_PLATFORMS);
+    let y = WORLD_H() - 30;
+    for (let i=0;i<INIT_PLATFORMS;i++){
+      const x = irand(12, WORLD_W()-PLATFORM_W-12);
+      const type = i<3 ? 'normal' : (Math.random()<0.2?'move':'normal');
+      const p = new Platform(x, y, type);
+      platforms.push(p);
+      y -= gap;
+    }
+  }
+
+  function spawnRow(){
+    // 在最高平台上方生成一个新平台，类型按分数权重
+    platforms.sort((a,b)=>a.y-b.y);
+    const top = platforms[0];
+    const gap = clamp(110 + score*0.002, 110, 160); // 难度平衡：随分数略增间距上限
+    const newY = top.y - gap;
+    const x = irand(12, WORLD_W()-PLATFORM_W-12);
+    const s = score;
+    // 概率：随分增加移动/断裂
+    let type = 'normal';
+    const r = Math.random();
+    if (s>800 && r<0.15) type='break';
+    else if (s>300 && r<0.28) type='move';
+    else if (r<0.08) type='move';
+    const p = new Platform(x, newY, type);
+    platforms.unshift(p);
+
+    // 敌人生成：从一定分数后偶发
+    if (s>200 && Math.random()<0.22){
+      const ex = irand(20, WORLD_W()-ENEMY_W-20); const ey = newY - irand(40, 140);
+      enemies.push(new Enemy(ex, ey));
+    }
+  }
+
+  function collide(a,b){
+    return !(a.x + a.w < b.x || a.x > b.x + b.w || a.y + a.h < b.y || a.y > b.y + b.h);
+  }
+
+  function update(dt){
+    player.update(dt);
+
+    // 平台更新与碰撞（仅角色下落时可踩）
+    platforms.forEach(p=>p.update());
+    if (player.vy>0){
+      for (const p of platforms){
+        if (p.broken) continue;
+        const boxP = {x:p.x, y:p.y, w:p.w, h:p.h};
+        const boxA = {x:player.x, y:player.y+PLAYER_H-4, w:PLAYER_W, h:4};
+        if (collide(boxA, boxP)){
+          if (p.type==='break') { p.broken = true; break; }
+          player.jump(player.jumpPower);
+          break;
+        }
+      }
+    }
+
+    // 道具拾取
+    for (const p of platforms){
+      if (!p.item) continue;
+      const it = p.item;
+      const hit = collide({x:player.x, y:player.y, w:PLAYER_W, h:PLAYER_H}, {x:it.x-10, y:it.y-10, w:20, h:20});
+      if (hit){
+        if (it.type==='spring') {
+          player.jump(player.jumpPower*1.45);
+        } else if (it.type==='shoes') {
+          player.springJumps = SPRING_SHOES_JUMPS;
+        } else if (it.type==='jet') {
+          player.jetpackEnd = performance.now() + JETPACK_TIME;
+        }
+        p.item = null; // 拾取后移除
+      }
+    }
+
+    // 敌人更新与碰撞
+    enemies.forEach(e=>e.update());
+    for (const e of enemies){
+      const hit = collide({x:player.x, y:player.y, w:PLAYER_W, h:PLAYER_H}, {x:e.x, y:e.y, w:e.w, h:e.h});
+      if (hit){
+        if (player.shield){ player.shield=false; } else { player.alive=false; }
+        break;
+      }
+    }
+
+    // 生成新平台（当最高平台进入屏幕较低位置时）
+    platforms.sort((a,b)=>a.y-b.y);
+    while (platforms[0].y - cameraY > -60) {
+      spawnRow();
+    }
+
+    // 清理落到屏幕下方的对象，并以此加少量分
+    const bottomLine = cameraY + WORLD_H() + 80;
+    platforms = platforms.filter(p => p.y < bottomLine);
+    enemies = enemies.filter(e => e.y < bottomLine);
+
+    // 更新分数显示
+    scoreEl.textContent = String(score);
+
+    if (!player.alive){ endGame(); }
+  }
+
+  function drawBackground(){
+    const w = WORLD_W(), h = WORLD_H();
+    // 远山（视差随 cameraY 轻微上移）
+    const base = (cameraY*0.2) % (h*2);
+    ctx.fillStyle = '#eaf5ff'; ctx.fillRect(0,0,w,h);
+
+    // 山层
+    ctx.fillStyle = '#cce4f6';
+    for(let i=-1;i<3;i++){
+      const y = (i*h) + base - h;
+      drawHills(0, y+h-140, w, 140, 3);
+    }
+    // 林线
+    ctx.fillStyle = '#a9d2ec';
+    drawHills(0, h-80 + (base*0.7)%h - h, w, 90, 6);
+  }
+  function drawHills(x,y,w,h,bumps){
+    ctx.beginPath(); ctx.moveTo(x, y+h);
+    const step = w/bumps;
+    for (let i=0;i<=bumps;i++){
+      const cx = x + i*step + step/2;
+      const cy = y + h - (i%2===0? h*0.55 : h*0.35);
+      ctx.quadraticCurveTo(cx, cy, x + (i+1)*step, y+h);
+    }
+    ctx.lineTo(x+w, y+h); ctx.lineTo(x, y+h);
+    ctx.fill();
+  }
+
+  function render(){
+    ctx.clearRect(0,0,canvas.clientWidth, canvas.clientHeight);
+    drawBackground();
+
+    // 绘制平台、敌人、玩家
+    platforms.forEach(p=>p.draw());
+    enemies.forEach(e=>e.draw());
+    player.draw();
+  }
+
+  let last = 0; let rafId = 0;
+  function loop(ts){
+    const dt = Math.min(33, ts - last); last = ts;
+    if (state==='playing'){
+      update(dt);
+      render();
+      rafId = requestAnimationFrame(loop);
+    }
+  }
+
+  function startGame(){
+    hud.style.display = 'flex'; gameover.style.display = 'none'; overlay.style.display = 'none';
+    resetWorld();
+    state = 'playing'; last = performance.now();
+    cancelAnimationFrame(rafId); rafId = requestAnimationFrame(loop);
+  }
+  function endGame(){
+    state = 'over';
+    cancelAnimationFrame(rafId);
+    // 更新最高分
+    if (score>best){ best=score; localStorage.setItem('moomin_best', String(best)); }
+    document.getElementById('finalScore').textContent = String(score);
+    document.getElementById('finalBest').textContent = String(best);
+    document.getElementById('finalBest');
+    bestEl.textContent = String(best);
+    setTimeout(()=>{ gameover.style.display = 'grid'; }, 200);
+  }
+
+  // ====== 传感器权限与监听 ======
+  async function enableMotion(){
+    try {
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
+        const res = await DeviceOrientationEvent.requestPermission();
+        if (res !== 'granted') throw new Error('未授权传感器');
+      }
+      window.addEventListener('deviceorientation', onTilt, true);
+      input.useGyro = true;
+    } catch(e){
+      input.useGyro = false;
+      // 回退：左右分屏触控
+      setupTouchFallback();
+      console.warn('陀螺仪不可用，已启用触控/键盘：', e);
+    }
+  }
+
+  function onTilt(ev){
+    if (typeof ev.gamma === 'number'){
+      input.gamma = clamp(ev.gamma, -TILT_MAX*1.5, TILT_MAX*1.5);
+    }
+  }
+
+  // 回退控制：屏幕左右区域按住移动
+  function setupTouchFallback(){
+    const wrap = document.getElementById('wrap');
+    function touchHandler(e){
+      if (state!=='playing') return;
+      input.keyLeft = input.keyRight = false;
+      for (const t of e.touches){
+        if (t.clientX < window.innerWidth/2) input.keyLeft = true; else input.keyRight = true;
+      }
+      e.preventDefault();
+    }
+    wrap.addEventListener('touchstart', touchHandler, {passive:false});
+    wrap.addEventListener('touchmove', touchHandler, {passive:false});
+    wrap.addEventListener('touchend', ()=>{ input.keyLeft=false; input.keyRight=false; }, {passive:false});
+
+    window.addEventListener('keydown', (e)=>{
+      if (e.key==='ArrowLeft' || e.key==='a') input.keyLeft=true;
+      if (e.key==='ArrowRight' || e.key==='d') input.keyRight=true;
+    });
+    window.addEventListener('keyup', (e)=>{
+      if (e.key==='ArrowLeft' || e.key==='a') input.keyLeft=false;
+      if (e.key==='ArrowRight' || e==='d') input.keyRight=false;
+    });
+  }
+
+  // 开始按钮：申请权限并校准零点
+  startBtn.addEventListener('click', async ()=>{
+    // 先适配画布尺寸
+    fitCanvas(); updateOrientationTip();
+    await enableMotion();
+    // 校准零点（1秒内采样平均）
+    const samples = [];
+    let timer = setTimeout(()=>{
+      input.tiltZero = samples.length? (samples.reduce((a,b)=>a+b,0)/samples.length) : 0;
+      startGame();
+    }, 800);
+    function cap(ev){ if (typeof ev.gamma==='number') samples.push(ev.gamma); }
+    window.addEventListener('deviceorientation', cap, {once:false});
+    setTimeout(()=> window.removeEventListener('deviceorientation', cap), 800);
+  });
+
+  againBtn.addEventListener('click', ()=>{
+    startGame();
+  });
+
+  // 初始静态渲染
+  (function drawSplash(){
+    drawBackground();
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.05)';
+    ctx.fillRect(20, WORLD_H()-120, WORLD_W()-40, 10);
+    ctx.restore();
+  })();
+  </script>
+</body>
+</html>
