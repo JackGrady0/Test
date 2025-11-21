@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>饮料盒包装表面积探究 - 交互动画</title>
+    <style>
+        :root {
+            /* 定义基础尺寸，比例 1cm = 10px */
+            --l: 90px;  /* 9cm */
+            --w: 30px;  /* 3cm */
+            --h: 120px; /* 12cm */
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            margin: 0;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+
+        /* 控制面板 */
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            margin-bottom: 40px;
+            text-align: center;
+            z-index: 10;
+            max-width: 800px;
+            width: 100%;
+        }
+
+        h2 { margin-top: 0; color: #333; }
+        
+        .btn-group {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            background-color: #e0e0e0;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        button.active {
+            background-color: #3b82f6;
+            color: white;
+            font-weight: bold;
+        }
+
+        button:hover:not(.active) {
+            background-color: #d1d5db;
+        }
+
+        .stats {
+            display: flex;
+            justify-content: space-around;
+            background: #f8fafc;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .stat-item strong {
+            color: #3b82f6;
+            font-size: 1.2em;
+        }
+
+        /* 3D 场景容器 */
+        .scene-container {
+            width: 100%;
+            flex-grow: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            perspective: 1200px; /* 透视深度 */
+            overflow: hidden;
+        }
+
+        .scene {
+            position: relative;
+            width: 0;
+            height: 0;
+            transform-style: preserve-3d;
+            /* 初始视角：旋转一下以便看到立体效果 */
+            transform: rotateX(-20deg) rotateY(-30deg);
+            transition: transform 1s ease;
+        }
+
+        /* 单个盒子 */
+        .box {
+            position: absolute;
+            width: var(--l);
+            height: var(--h);
+            transform-style: preserve-3d;
+            transition: transform 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+            /* 默认中心点在几何中心 */
+            margin-left: calc(var(--l) / -2);
+            margin-top: calc(var(--h) / -2);
+        }
+
+        /* 盒子的六个面 */
+        .face {
+            position: absolute;
+            border: 2px solid rgba(0,0,0,0.3);
+            background: rgba(59, 130, 246, 0.8); /* 饮料盒颜色 */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            color: white;
+            font-weight: bold;
+            backface-visibility: hidden;
+        }
+
+        /* 面的尺寸与变换 */
+        .face.front  { width: var(--l); height: var(--h); transform: translateZ(calc(var(--w) / 2)); }
+        .face.back   { width: var(--l); height: var(--h); transform: rotateY(180deg) translateZ(calc(var(--w) / 2)); }
+        .face.right  { width: var(--w); height: var(--h); transform: rotateY(90deg) translateZ(calc(var(--l) / 2)); left: calc((var(--l) - var(--w))/2); }
+        .face.left   { width: var(--w); height: var(--h); transform: rotateY(-90deg) translateZ(calc(var(--l) / 2)); left: calc((var(--l) - var(--w))/2); }
+        .face.top    { width: var(--l); height: var(--w); transform: rotateX(90deg) translateZ(calc(var(--h) / 2)); top: calc((var(--h) - var(--w))/2); }
+        .face.bottom { width: var(--l); height: var(--w); transform: rotateX(-90deg) translateZ(calc(var(--h) / 2)); top: calc((var(--h) - var(--w))/2); }
+
+        /* 给不同盒子一点颜色差异，方便区分 */
+        .box:nth-child(1) .face { background: rgba(59, 130, 246, 0.85); }
+        .box:nth-child(2) .face { background: rgba(37, 99, 235, 0.85); }
+        .box:nth-child(3) .face { background: rgba(29, 78, 216, 0.85); }
+        .box:nth-child(4) .face { background: rgba(30, 64, 175, 0.85); }
+        
+        .note {
+            margin-top: 10px;
+            font-size: 0.9em;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <h2>🧃 4盒饮料包装方案探究 (9cm × 3cm × 12cm)</h2>
+        
+        <div class="btn-group" id="btnGroup">
+            </div>
+
+        <div class="stats">
+            <div class="stat-item">组合尺寸: <span id="dims-display">--</span></div>
+            <div class="stat-item">总表面积: <strong id="area-display">--</strong> cm²</div>
+            <div class="stat-item">减少面积: <span id="saved-display">--</span> cm²</div>
+        </div>
+        <div class="note">单盒表面积: 342 cm² | 4盒分散总面积: 1368 cm²</div>
+    </div>
+
+    <div class="scene-container">
+        <div class="scene" id="scene">
+            <div class="box" id="box1"><div class="face front"></div><div class="face back"></div><div class="face right"></div><div class="face left"></div><div class="face top"></div><div class="face bottom"></div></div>
+            <div class="box" id="box2"><div class="face front"></div><div class="face back"></div><div class="face right"></div><div class="face left"></div><div class="face top"></div><div class="face bottom"></div></div>
+            <div class="box" id="box3"><div class="face front"></div><div class="face back"></div><div class="face right"></div><div class="face left"></div><div class="face top"></div><div class="face bottom"></div></div>
+            <div class="box" id="box4"><div class="face front"></div><div class="face back"></div><div class="face right"></div><div class="face left"></div><div class="face top"></div><div class="face bottom"></div></div>
+        </div>
+    </div>
+
+    <script>
+        // 基础参数 (cm)
+        const L = 9, W = 3, H = 12;
+        const BOX_AREA = 2 * (L*W + L*H + W*H); // 342
+        const TOTAL_SINGLE_AREA = 4 * BOX_AREA; // 1368
+
+        // CSS 像素缩放比例 (需要与CSS中的 --l, --w, --h 保持一致)
+        const SCALE = 10; 
+
+        // 定义6种组合方式
+        // grid: [x轴数量, y轴数量, z轴数量] (对应 长, 高, 宽 方向)
+        // 注意：CSS 3D坐标系中，Y是向下(高)，X是向右(长)，Z是向屏幕外(宽)
+        const configs = [
+            { 
+                name: "方案 1: 重叠最大面 (2×2)", 
+                desc: "最省包装纸",
+                grid: [1, 2, 2], // 1排长, 2层高, 2排宽
+                math: { l: L, h: H*2, w: W*2 } 
+            },
+            { 
+                name: "方案 2: 平铺一层 (2×2)", 
+                desc: "扁平包装",
+                grid: [2, 1, 2], // 2排长, 1层高, 2排宽
+                math: { l: L*2, h: H, w: W*2 }
+            },
+            { 
+                name: "方案 3: 竖立一排 (4×1)", 
+                desc: "细长条",
+                grid: [4, 1, 1], // 4排长
+                math: { l: L*4, h: H, w: W }
+            },
+            { 
+                name: "方案 4: 侧立一排 (1×4)", 
+                desc: "宽扁排",
+                grid: [1, 1, 4], // 4排宽
+                math: { l: L, h: H, w: W*4 }
+            },
+            { 
+                name: "方案 5: 叠成高塔 (1×1)", 
+                desc: "极不稳定",
+                grid: [1, 4, 1], // 4层高
+                math: { l: L, h: H*4, w: W }
+            },
+            { 
+                name: "方案 6: 墙状堆叠 (2×2)", 
+                desc: "重叠中等面",
+                grid: [2, 2, 1], // 2排长, 2层高
+                math: { l: L*2, h: H*2, w: W }
+            }
+        ];
+
+        const boxes = document.querySelectorAll('.box');
+        const btnGroup = document.getElementById('btnGroup');
+        const displayDims = document.getElementById('dims-display');
+        const displayArea = document.getElementById('area-display');
+        const displaySaved = document.getElementById('saved-display');
+        const scene = document.getElementById('scene');
+
+        // 初始化按钮
+        configs.forEach((conf, index) => {
+            const btn = document.createElement('button');
+            btn.innerText = conf.name;
+            btn.onclick = () => applyConfig(index);
+            if (index === 0) btn.classList.add('active');
+            btnGroup.appendChild(btn);
+        });
+
+        function calculateSurfaceArea(l, w, h) {
+            return 2 * (l*w + l*h + w*h);
+        }
+
+        function applyConfig(index) {
+            // 更新UI状态
+            document.querySelectorAll('button').forEach((b, i) => {
+                b.classList.toggle('active', i === index);
+            });
+
+            const config = configs[index];
+            const g = config.grid; // [nx, ny, nz] -> [cols, rows, layers]
+            
+            // 计算当前组合的实际物理尺寸
+            const totalL = config.math.l;
+            const totalH = config.math.h;
+            const totalW = config.math.w;
+
+            const currentArea = calculateSurfaceArea(totalL, totalW, totalH);
+            
+            // 更新数据显示
+            displayDims.innerText = `${totalL} × ${totalW} × ${totalH} (cm)`;
+            displayArea.innerText = currentArea;
+            displaySaved.innerText = TOTAL_SINGLE_AREA - currentArea;
+
+            // 重新排列盒子动画
+            // 我们需要计算每个盒子在3D空间中的中心点坐标
+            // 整个组合的中心点应该在 (0,0,0)
+            
+            let boxIndex = 0;
+            
+            // 基础偏移量 (半个尺寸)
+            const unitL = L * SCALE;
+            const unitH = H * SCALE;
+            const unitW = W * SCALE;
+
+            // 计算起始偏移，使得整体居中
+            // 如果 x轴有2个盒子，总宽是 2*unitL，起始点应该是 -unitL + 0.5*unitL
+            const startX = -((g[0] * unitL) / 2) + (unitL / 2);
+            const startY = -((g[1] * unitH) / 2) + (unitH / 2);
+            const startZ = -((g[2] * unitW) / 2) + (unitW / 2);
+
+            for (let x = 0; x < g[0]; x++) {
+                for (let y = 0; y < g[1]; y++) {
+                    for (let z = 0; z < g[2]; z++) {
+                        if (boxIndex >= 4) break;
+
+                        const b = boxes[boxIndex];
+                        
+                        // 计算位移
+                        const posX = startX + (x * unitL);
+                        const posY = startY + (y * unitH);
+                        // Z轴正方向也是需要叠加的 (注意CSS Z轴方向)
+                        // CSS translateZ: 正值离观众近。我们这里堆叠，假设Z增加是向后堆叠(为了方便计算可以是负)
+                        // 或者简单点，间隔排列
+                        const posZ = startZ + (z * unitW); 
+
+                        b.style.transform = `translate3d(${posX}px, ${posY}px, ${posZ}px)`;
+                        
+                        boxIndex++;
+                    }
+                }
+            }
+        }
+
+        // 鼠标拖动旋转场景
+        let isDragging = false;
+        let previousMousePosition = { x: 0, y: 0 };
+        let rotation = { x: -20, y: -30 };
+
+        document.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            previousMousePosition = { x: e.clientX, y: e.clientY };
+        });
+
+        document.addEventListener('mouseup', () => isDragging = false);
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const deltaMove = {
+                x: e.clientX - previousMousePosition.x,
+                y: e.clientY - previousMousePosition.y
+            };
+            
+            rotation.y += deltaMove.x * 0.5;
+            rotation.x -= deltaMove.y * 0.5;
+
+            scene.style.transform = `rotateX(${rotation.x}deg) rotateY(${rotation.y}deg)`;
+            previousMousePosition = { x: e.clientX, y: e.clientY };
+        });
+
+        // 初始化
+        applyConfig(0);
+
+    </script>
+</body>
+</html>
