@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>包装的学问 - 完美修复版</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; background: #1a1a1a; touch-action: none; }
+        
+        /* 顶部数据 HUD */
+        #hud {
+            position: absolute; top: 15px; left: 50%; transform: translateX(-50%);
+            background: rgba(40, 40, 40, 0.95); color: #fff;
+            padding: 12px 25px; border-radius: 10px; border: 1px solid #555;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5); text-align: center;
+            min-width: 320px; user-select: none; pointer-events: none;
+        }
+        #hud-title { font-size: 12px; color: #aaa; margin-bottom: 5px; }
+        #area-display { font-size: 28px; font-weight: bold; font-family: monospace; color: #ddd; transition: 0.3s; }
+        #area-display.success { color: #4ade80; transform: scale(1.05); }
+        #status-msg { font-size: 13px; color: #f59e0b; margin-top: 5px; }
+
+        /* 底部按钮区 */
+        .btn-container {
+            position: absolute; bottom: 30px; width: 100%; 
+            display: flex; justify-content: center; gap: 20px; pointer-events: none;
+            z-index: 10;
+        }
+
+        .action-btn {
+            pointer-events: auto;
+            background: #333; color: white; border: 1px solid #555;
+            padding: 12px 24px; border-radius: 30px; cursor: pointer; 
+            font-size: 16px; font-weight: bold;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            display: flex; align-items: center; gap: 8px;
+            transition: transform 0.1s, background 0.2s;
+        }
+        .action-btn:active { transform: scale(0.95); }
+        .action-btn:hover { background: #444; }
+        
+        #rotate-btn {
+            background: #2563eb; border-color: #1d4ed8;
+            opacity: 0.5; cursor: not-allowed; 
+        }
+        #rotate-btn.active { opacity: 1; cursor: pointer; }
+
+        /* 重置按钮 */
+        #reset-btn {
+            position: absolute; top: 20px; right: 20px; pointer-events: auto;
+            background: #333; color: white; border: 1px solid #555;
+            padding: 8px 15px; border-radius: 6px; cursor: pointer; font-size: 13px;
+            z-index: 20;
+        }
+        #reset-btn:hover { background: #444; }
+
+        /* 提示 */
+        #tips {
+            position: absolute; bottom: 90px; width: 100%; text-align: center; pointer-events: none;
+        }
+        .tag {
+            background: rgba(255,255,255,0.1); color: #ccc; padding: 4px 10px;
+            border-radius: 4px; font-size: 12px; display: inline-block;
+            backdrop-filter: blur(4px); border: 1px solid rgba(255,255,255,0.1);
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.157.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="hud">
+        <div id="hud-title">当前总表面积 (4盒总计: 1368)</div>
+        <div id="area-display">等待拼合...</div>
+        <div id="status-msg">请拖动箭头拼搭 (松手吸附)</div>
+    </div>
+
+    <button id="reset-btn">↺ 重置场景</button>
+
+    <div id="tips">
+        <span class="tag">🖱️ 拖动空白转视角</span>
+        <span class="tag">👆 点击选中盒子</span>
+        <span class="tag">🏹 拖动红绿蓝箭头</span>
+    </div>
+
+    <div class="btn-container">
+        <button class="action-btn" id="rotate-btn">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+            旋转姿态
+        </button>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { TransformControls } from 'three/addons/controls/TransformControls.js';
+
+        // === 参数 ===
+        const CONFIG = {
+            L: 9, H: 12, W: 3,
+            TOTAL_SEPARATE: 1368,
+            SNAP_TOLERANCE: 2.5, 
+            COLORS: [0x3b82f6, 0xef4444, 0x10b981, 0xf59e0b]
+        };
+
+        let scene, camera, renderer, orbit, control;
+        let boxes = [];
+        const boxInitialStates = [];
+        let selectedBox = null;
+        let isDragging = false;
+
+        const elArea = document.getElementById('area-display');
+        const elMsg = document.getElementById('status-msg');
+        const btnReset = document.getElementById('reset-btn');
+        const btnRotate = document.getElementById('rotate-btn');
+
+        init();
+        animate();
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a1a);
+            const grid = new THREE.GridHelper(100, 100, 0x444444, 0x222222);
+            scene.add(grid);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(35, 40, 45);
+            camera.lookAt(0, 0, 0);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(20, 40, 20);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            orbit = new OrbitControls(camera, renderer.domElement);
+            orbit.enableDamping = true;
+            orbit.maxPolarAngle = Math.PI / 2 - 0.1;
+
+            control = new TransformControls(camera, renderer.domElement);
+            control.setTranslationSnap(null); 
+            control.setRotationSnap(Math.PI/2);
+            control.showX = true; control.showY = true; control.showZ = true; 
+            scene.add(control);
+
+            createBoxes();
+            setupEvents();
+        }
+
+        function createBoxes() {
+            const geometry = new THREE.BoxGeometry(CONFIG.L, CONFIG.H, CONFIG.W);
+            const posOffsets = [
+                {x: -8, z: -8}, {x: 8, z: -8}, {x: -8, z: 8}, {x: 8, z: 8}
+            ];
+
+            for(let i=0; i<4; i++) {
+                const mat = new THREE.MeshStandardMaterial({ color: CONFIG.COLORS[i], roughness: 0.4 });
+                const box = new THREE.Mesh(geometry, mat);
+                box.position.set(posOffsets[i].x, CONFIG.H/2, posOffsets[i].z);
+                box.castShadow = true; box.receiveShadow = true;
+                
+                const edges = new THREE.LineSegments(
+                    new THREE.EdgesGeometry(geometry),
+                    new THREE.LineBasicMaterial({ color: 0x000000, opacity: 0.3, transparent: true })
+                );
+                
+                // === 关键修复 ===
+                // 禁用边框线的射线检测功能。
+                // 这意味着无论鼠标怎么点，射线都会穿透边框线，只检测下面的实体长方体。
+                edges.raycast = () => {}; 
+                
+                box.add(edges);
+                box.userData = { id: i, edges: edges, orientation: 0 };
+
+                scene.add(box);
+                boxes.push(box);
+                
+                boxInitialStates.push({
+                    pos: box.position.clone(),
+                    rot: box.rotation.clone()
+                });
+            }
+        }
+
+        function setupEvents() {
+            control.addEventListener('dragging-changed', (event) => {
+                isDragging = event.value;
+                orbit.enabled = !isDragging;
+                if (!isDragging && control.object) {
+                    snapBox(control.object);
+                    updateCalculation();
+                }
+            });
+
+            control.addEventListener('change', () => {
+                if (isDragging && control.object) {
+                    const obj = control.object;
+                    if (isNaN(obj.position.x)) obj.position.set(0, 20, 0);
+                    const size = getRealSize(obj);
+                    if (obj.position.y < size.y/2) obj.position.y = size.y/2;
+                }
+            });
+
+            const raycaster = new THREE.Raycaster();
+            const mouse = new THREE.Vector2();
+
+            renderer.domElement.addEventListener('pointerdown', (e) => {
+                if (isDragging) return;
+                
+                const rect = renderer.domElement.getBoundingClientRect();
+                mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+                mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+                raycaster.setFromCamera(mouse, camera);
+                // 射线检测只会返回 Box Mesh，因为我们禁用了 edges 的 raycast
+                const intersects = raycaster.intersectObjects(boxes);
+
+                if (intersects.length > 0) {
+                    selectedBox = intersects[0].object;
+                    control.attach(selectedBox);
+                    btnRotate.classList.add('active');
+                }
+            });
+
+            orbit.addEventListener('start', () => {
+                // 当旋转视角开始时，不执行取消选中，保持操作流畅性
+                // 除非需要非常严格的点击空白取消
+            });
+
+            btnRotate.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (selectedBox) {
+                    rotateBox(selectedBox);
+                    snapBox(selectedBox);
+                    updateCalculation();
+                }
+            });
+
+            btnReset.addEventListener('click', () => {
+                control.detach();
+                selectedBox = null;
+                btnRotate.classList.remove('active');
+                boxes.forEach((box, i) => {
+                    box.position.copy(boxInitialStates[i].pos);
+                    box.rotation.copy(boxInitialStates[i].rot);
+                    box.userData.orientation = 0;
+                    highlight(box, false);
+                });
+                updateCalculation();
+            });
+
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        function rotateBox(obj) {
+            let ori = obj.userData.orientation;
+            ori = (ori + 1) % 3;
+            obj.userData.orientation = ori;
+            obj.rotation.set(0,0,0);
+            if (ori === 1) obj.rotation.x = -Math.PI/2;
+            if (ori === 2) obj.rotation.y = -Math.PI/2;
+            obj.updateMatrixWorld();
+            const s = getRealSize(obj);
+            if(obj.position.y < s.y/2) obj.position.y = s.y/2;
+        }
+
+        function getRealSize(obj) {
+            const box3 = new THREE.Box3().setFromObject(obj);
+            const sz = new THREE.Vector3();
+            box3.getSize(sz);
+            sz.x = Math.round(sz.x); sz.y = Math.round(sz.y); sz.z = Math.round(sz.z);
+            return sz;
+        }
+
+        function snapBox(active) {
+            if (!active) return;
+            const mySz = getRealSize(active);
+            let bestPos = null;
+            let minD = CONFIG.SNAP_TOLERANCE;
+
+            for (let other of boxes) {
+                if (other === active) continue;
+                const otSz = getRealSize(other);
+                const diff = new THREE.Vector3().subVectors(active.position, other.position);
+                const idx = (mySz.x + otSz.x)/2;
+                const idy = (mySz.y + otSz.y)/2;
+                const idz = (mySz.z + otSz.z)/2;
+                const dx = Math.abs(diff.x);
+                const dy = Math.abs(diff.y);
+                const dz = Math.abs(diff.z);
+
+                // 吸附判定：允许一定的误差，且必须是相同尺寸的面
+                // 比如 9x12 面贴 9x12 面
+                
+                // X吸附
+                if (Math.abs(dx - idx) < minD && dy < 1 && dz < 1) {
+                    // 检查贴合面尺寸(Y, Z)是否一致
+                    if (Math.abs(mySz.y - otSz.y) < 0.2 && Math.abs(mySz.z - otSz.z) < 0.2) {
+                        minD = Math.abs(dx - idx);
+                        bestPos = other.position.clone().setX(other.position.x + (diff.x>0?idx:-idx));
+                    }
+                }
+                // Y吸附
+                if (Math.abs(dy - idy) < minD && dx < 1 && dz < 1) {
+                    if (Math.abs(mySz.x - otSz.x) < 0.2 && Math.abs(mySz.z - otSz.z) < 0.2) {
+                        minD = Math.abs(dy - idy);
+                        bestPos = other.position.clone().setY(other.position.y + (diff.y>0?idy:-idy));
+                    }
+                }
+                // Z吸附
+                if (Math.abs(dz - idz) < minD && dx < 1 && dy < 1) {
+                    if (Math.abs(mySz.x - otSz.x) < 0.2 && Math.abs(mySz.y - otSz.y) < 0.2) {
+                        minD = Math.abs(dz - idz);
+                        bestPos = other.position.clone().setZ(other.position.z + (diff.z>0?idz:-idz));
+                    }
+                }
+            }
+
+            if (bestPos) {
+                active.position.copy(bestPos);
+                active.updateMatrixWorld();
+            }
+        }
+
+        function updateCalculation() {
+            let savedArea = 0;
+            const adj = [[],[],[],[]];
+            boxes.forEach(b => highlight(b, false));
+
+            for(let i=0; i<4; i++) {
+                for(let j=i+1; j<4; j++) {
+                    const b1 = boxes[i]; const b2 = boxes[j];
+                    const s1 = getRealSize(b1); const s2 = getRealSize(b2);
+                    const p1 = b1.position; const p2 = b2.position;
+                    
+                    const dx = Math.abs(p1.x - p2.x);
+                    const dy = Math.abs(p1.y - p2.y);
+                    const dz = Math.abs(p1.z - p2.z);
+                    const ix = (s1.x+s2.x)/2;
+                    const iy = (s1.y+s2.y)/2;
+                    const iz = (s1.z+s2.z)/2;
+                    const eps = 0.1; 
+                    let face = 0;
+
+                    if (Math.abs(dx - ix) < eps && dy < eps && dz < eps) face = s1.y * s1.z;
+                    else if (Math.abs(dy - iy) < eps && dx < eps && dz < eps) face = s1.x * s1.z;
+                    else if (Math.abs(dz - iz) < eps && dx < eps && dy < eps) face = s1.x * s1.y;
+
+                    if (face > 0) {
+                        savedArea += face * 2;
+                        adj[i].push(j); adj[j].push(i);
+                        highlight(b1, true); highlight(b2, true);
+                    }
+                }
+            }
+
+            const visited = new Set();
+            const q = [0]; visited.add(0);
+            while(q.length) {
+                const u = q.shift();
+                for(const v of adj[u]) if(!visited.has(v)) { visited.add(v); q.push(v); }
+            }
+            const allConnected = visited.size === 4;
+
+            if (savedArea > 0 && allConnected) {
+                const total = CONFIG.TOTAL_SEPARATE - savedArea;
+                elArea.innerText = total + " cm²";
+                elArea.className = "success";
+                elMsg.innerText = "✅ 拼搭成功！";
+                elMsg.style.color = "#4ade80";
+            } else if (savedArea > 0 && !allConnected) {
+                elArea.innerText = "----";
+                elArea.className = "";
+                elMsg.innerText = "⚠️ 必须将4个盒子连在一起";
+                elMsg.style.color = "#f59e0b";
+            } else {
+                elArea.innerText = "等待拼合...";
+                elArea.className = "";
+                elMsg.innerText = "请拖动箭头拼搭 (松手吸附)";
+                elMsg.style.color = "#aaa";
+            }
+        }
+
+        function highlight(box, isActive) {
+            const edges = box.userData.edges;
+            if (isActive) {
+                edges.material.color.setHex(0xffffff);
+                edges.material.opacity = 1.0;
+            } else {
+                edges.material.color.setHex(0x000000);
+                edges.material.opacity = 0.3;
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            orbit.update();
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
