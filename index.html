@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>包装的学问 - 6种组合全解版</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Roboto, sans-serif; background: #1a1a1a; touch-action: none; }
+        
+        /* 顶部数据区 */
+        #hud {
+            position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+            background: rgba(30, 30, 30, 0.95); color: #fff;
+            padding: 15px 20px; border-radius: 12px; border: 1px solid #444;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.6); text-align: center;
+            width: 90%; max-width: 500px; user-select: none; pointer-events: none;
+            display: flex; flex-direction: column; gap: 8px;
+        }
+
+        .hud-row { display: flex; justify-content: space-between; align-items: center; font-size: 14px; color: #aaa; }
+        .hud-main { font-size: 32px; font-weight: bold; color: #666; font-family: monospace; margin: 5px 0; transition: color 0.3s;}
+        .hud-main.success { color: #4ade80; }
+        .hud-detail { font-size: 12px; color: #888; }
+        
+        /* 重置按钮 */
+        #reset-btn {
+            position: absolute; top: 20px; right: 20px; pointer-events: auto;
+            background: #333; color: white; border: 1px solid #555;
+            padding: 8px 15px; border-radius: 6px; cursor: pointer; font-size: 13px;
+        }
+        #reset-btn:hover { background: #444; }
+
+        /* 底部操作提示 */
+        #controls {
+            position: absolute; bottom: 30px; width: 100%; text-align: center; pointer-events: none;
+        }
+        .tag {
+            background: rgba(255,255,255,0.1); color: #ddd; padding: 6px 12px;
+            border-radius: 20px; font-size: 12px; display: inline-block; margin: 0 4px; 
+            border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(4px);
+        }
+        .tag strong { color: #fff; }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.157.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="hud">
+        <div class="hud-row">
+            <span>单盒表面积: 342 cm²</span>
+            <span>4盒分散总计: 1368 cm²</span>
+        </div>
+        <div id="area-display" class="hud-main">等待拼合...</div>
+        <div id="overlap-display" class="hud-detail">减少面积: 0 cm² (接触面: 0)</div>
+    </div>
+
+    <button id="reset-btn" onclick="window.resetScene()">↺ 重置位置</button>
+
+    <div id="controls">
+        <div class="tag">🖱️ <strong>拖动空白</strong> 旋转视角</div>
+        <div class="tag">👇 <strong>双击盒子</strong> 切换姿态(平/立/侧)</div>
+        <div class="tag">✨ <strong>松手</strong> 自动吸附对齐</div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { TransformControls } from 'three/addons/controls/TransformControls.js';
+
+        // === 严谨的数学常数 ===
+        const CONFIG = {
+            L: 9, H: 12, W: 3,
+            TOTAL_SEPARATE: 1368,
+            // 吸附阈值 (cm)
+            SNAP_TOLERANCE: 2.5,
+            // 只有当面尺寸差异小于此值才允许吸附
+            SIZE_TOLERANCE: 0.1,
+            COLORS: [0x3b82f6, 0xef4444, 0x10b981, 0xf59e0b]
+        };
+
+        let scene, camera, renderer, orbit, control;
+        let boxes = [];
+        const boxInitialStates = []; // 用于重置
+
+        // DOM 元素
+        const elDisplay = document.getElementById('area-display');
+        const elDetail = document.getElementById('overlap-display');
+
+        init();
+        animate();
+
+        function init() {
+            // 1. 场景
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a1a);
+            
+            // 网格辅助 (1格=1cm)
+            const grid = new THREE.GridHelper(100, 100, 0x444444, 0x222222);
+            scene.add(grid);
+
+            // 2. 相机 (设置在 45 度角，视野清晰)
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(30, 35, 40);
+            camera.lookAt(0, 0, 0);
+
+            // 3. 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            // 4. 灯光
+            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(15, 30, 15);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
+            scene.add(dirLight);
+
+            // 5. 创建盒子
+            createBoxes();
+
+            // 6. 控制器
+            orbit = new OrbitControls(camera, renderer.domElement);
+            orbit.enableDamping = true;
+            orbit.maxPolarAngle = Math.PI / 2 - 0.1; // 禁止钻地
+
+            control = new TransformControls(camera, renderer.domElement);
+            control.setTranslationSnap(null); // 移动时不吸附，松手才吸附
+            control.setRotationSnap(Math.PI/2);
+            scene.add(control);
+
+            setupEvents();
+        }
+
+        function createBoxes() {
+            const geometry = new THREE.BoxGeometry(CONFIG.L, CONFIG.H, CONFIG.W);
+            
+            // 初始位置：分散摆放
+            const positions = [
+                {x: -8, z: -8}, {x: 8, z: -8}, {x: -8, z: 8}, {x: 8, z: 8}
+            ];
+
+            for (let i = 0; i < 4; i++) {
+                const material = new THREE.MeshStandardMaterial({ 
+                    color: CONFIG.COLORS[i], roughness: 0.4, metalness: 0.1 
+                });
+                const box = new THREE.Mesh(geometry, material);
+                
+                // 默认姿态：立着 (9x12x3)
+                box.position.set(positions[i].x, CONFIG.H/2, positions[i].z);
+                
+                box.castShadow = true;
+                box.receiveShadow = true;
+                box.userData = { 
+                    id: i, 
+                    orientation: 0 // 0:立, 1:平, 2:侧
+                };
+
+                // 边缘线框 (高亮用)
+                const edges = new THREE.LineSegments(
+                    new THREE.EdgesGeometry(geometry),
+                    new THREE.LineBasicMaterial({ color: 0x000000, opacity: 0.3, transparent: true })
+                );
+                box.add(edges);
+                box.userData.edges = edges;
+
+                scene.add(box);
+                boxes.push(box);
+                
+                // 保存初始状态用于重置
+                boxInitialStates.push({
+                    pos: box.position.clone(),
+                    rot: box.rotation.clone(),
+                    scale: box.scale.clone() // 虽然不缩放，但为了统一步骤
+                });
+            }
+        }
+
+        // 获取盒子在世界坐标系下的实际尺寸 (Bounding Box Size)
+        function getWorldSize(obj) {
+            const box3 = new THREE.Box3().setFromObject(obj);
+            const size = new THREE.Vector3();
+            box3.getSize(size);
+            // 消除浮点误差
+            size.x = Math.round(size.x);
+            size.y = Math.round(size.y);
+            size.z = Math.round(size.z);
+            return size;
+        }
+
+        function setupEvents() {
+            // 拖拽监听
+            control.addEventListener('dragging-changed', (event) => {
+                orbit.enabled = !event.value;
+                
+                if (!event.value) {
+                    // 拖拽结束：执行吸附和计算
+                    const obj = control.object;
+                    attemptSnap(obj);
+                    updateCalculation();
+                }
+            });
+
+            // 拖拽过程：防穿地
+            control.addEventListener('change', () => {
+                if(control.dragging && control.object) {
+                    const obj = control.object;
+                    const size = getWorldSize(obj);
+                    if(obj.position.y < size.y/2) obj.position.y = size.y/2;
+                }
+            });
+
+            // 点击选中
+            const raycaster = new THREE.Raycaster();
+            const mouse = new THREE.Vector2();
+
+            renderer.domElement.addEventListener('pointerdown', (e) => {
+                if(control.dragging) return;
+                mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                raycaster.setFromCamera(mouse, camera);
+                const intersects = raycaster.intersectObjects(boxes);
+
+                if(intersects.length > 0) {
+                    control.attach(intersects[0].object);
+                } else {
+                    control.detach();
+                }
+            });
+
+            // 双击切换姿态 (核心功能：支持所有6种组合的关键)
+            renderer.domElement.addEventListener('dblclick', (e) => {
+                mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                raycaster.setFromCamera(mouse, camera);
+                const intersects = raycaster.intersectObjects(boxes);
+
+                if(intersects.length > 0) {
+                    const obj = intersects[0].object;
+                    cycleOrientation(obj);
+                    attemptSnap(obj); // 变完姿态尝试吸附
+                    updateCalculation();
+                }
+            });
+        }
+
+        // 切换盒子的三种主姿态
+        function cycleOrientation(obj) {
+            // 姿态 0: 原始 (9, 12, 3)
+            // 姿态 1: 躺平 (9, 3, 12) - 绕X转90
+            // 姿态 2: 侧立 (3, 12, 9) - 绕Y转90
+            
+            let nextState = (obj.userData.orientation + 1) % 3;
+            obj.userData.orientation = nextState;
+
+            // 重置旋转
+            obj.rotation.set(0, 0, 0);
+
+            if (nextState === 1) {
+                obj.rotation.x = -Math.PI / 2;
+            } else if (nextState === 2) {
+                obj.rotation.y = -Math.PI / 2;
+            }
+            // 姿态0 保持 0,0,0
+
+            obj.updateMatrixWorld();
+            
+            // 调整Y位置防止陷入地面
+            const size = getWorldSize(obj);
+            if(obj.position.y < size.y/2) obj.position.y = size.y/2;
+        }
+
+        // === 核心逻辑：严谨吸附 ===
+        function attemptSnap(activeBox) {
+            const mySize = getWorldSize(activeBox);
+            const myBB = new THREE.Box3().setFromObject(activeBox);
+            
+            let bestSnap = null;
+            let minDistance = CONFIG.SNAP_TOLERANCE;
+
+            // 遍历其他盒子寻找吸附点
+            for (let other of boxes) {
+                if (other === activeBox) continue;
+                
+                const otherSize = getWorldSize(other);
+                const otherBB = new THREE.Box3().setFromObject(other);
+                
+                // 计算中心距离矢量
+                const diff = new THREE.Vector3().subVectors(activeBox.position, other.position);
+                const absX = Math.abs(diff.x);
+                const absY = Math.abs(diff.y);
+                const absZ = Math.abs(diff.z);
+
+                // 理想中心距
+                const idealX = (mySize.x + otherSize.x) / 2;
+                const idealY = (mySize.y + otherSize.y) / 2;
+                const idealZ = (mySize.z + otherSize.z) / 2;
+
+                // 检查 X 轴方向吸附 (左右贴合)
+                // 条件：距离接近idealX，且另外两轴对齐，且接触面尺寸一致
+                if (Math.abs(absX - idealX) < minDistance) {
+                    // Y和Z必须对齐 (误差允许极小)
+                    if (absY < 1.0 && absZ < 1.0) {
+                        // 检查面匹配: 此时接触面是 YZ 平面
+                        // 要求 my.Y == other.Y && my.Z == other.Z
+                        if (Math.abs(mySize.y - otherSize.y) < CONFIG.SIZE_TOLERANCE &&
+                            Math.abs(mySize.z - otherSize.z) < CONFIG.SIZE_TOLERANCE) {
+                            
+                            minDistance = Math.abs(absX - idealX);
+                            bestSnap = {
+                                pos: new THREE.Vector3(
+                                    other.position.x + (diff.x > 0 ? idealX : -idealX),
+                                    other.position.y,
+                                    other.position.z
+                                )
+                            };
+                        }
+                    }
+                }
+
+                // 检查 Y 轴方向吸附 (上下堆叠)
+                if (Math.abs(absY - idealY) < minDistance) {
+                    if (absX < 1.0 && absZ < 1.0) {
+                        // 接触面 XZ
+                        if (Math.abs(mySize.x - otherSize.x) < CONFIG.SIZE_TOLERANCE &&
+                            Math.abs(mySize.z - otherSize.z) < CONFIG.SIZE_TOLERANCE) {
+                            
+                            minDistance = Math.abs(absY - idealY);
+                            bestSnap = {
+                                pos: new THREE.Vector3(
+                                    other.position.x,
+                                    other.position.y + (diff.y > 0 ? idealY : -idealY),
+                                    other.position.z
+                                )
+                            };
+                        }
+                    }
+                }
+
+                // 检查 Z 轴方向吸附 (前后贴合)
+                if (Math.abs(absZ - idealZ) < minDistance) {
+                    if (absX < 1.0 && absY < 1.0) {
+                        // 接触面 XY
+                        if (Math.abs(mySize.x - otherSize.x) < CONFIG.SIZE_TOLERANCE &&
+                            Math.abs(mySize.y - otherSize.y) < CONFIG.SIZE_TOLERANCE) {
+                            
+                            minDistance = Math.abs(absZ - idealZ);
+                            bestSnap = {
+                                pos: new THREE.Vector3(
+                                    other.position.x,
+                                    other.position.y,
+                                    other.position.z + (diff.z > 0 ? idealZ : -idealZ)
+                                )
+                            };
+                        }
+                    }
+                }
+            }
+
+            if (bestSnap) {
+                activeBox.position.copy(bestSnap.pos);
+            }
+        }
+
+        // === 核心逻辑：基于 AABB 交集的精准计算 ===
+        function updateCalculation() {
+            let totalOverlapArea = 0;
+            let contactCount = 0;
+            let connectedPairs = 0;
+
+            // 1. 重置高亮
+            boxes.forEach(b => {
+                b.userData.edges.material.color.setHex(0x000000);
+                b.userData.edges.material.opacity = 0.3;
+            });
+
+            // 2. 构建并查集/图来检查全连通性
+            const adj = new Array(4).fill(0).map(() => []);
+
+            // 3. 两两检查重叠
+            for (let i = 0; i < boxes.length; i++) {
+                for (let j = i + 1; j < boxes.length; j++) {
+                    const b1 = boxes[i];
+                    const b2 = boxes[j];
+
+                    // 获取稍微缩小一点的 AABB，避免边缘误触
+                    // 但为了计算重叠面，我们使用实际尺寸逻辑
+                    
+                    const p1 = b1.position;
+                    const p2 = b2.position;
+                    const s1 = getWorldSize(b1);
+                    const s2 = getWorldSize(b2);
+
+                    // 检查中心距是否等于尺寸和的一半 (严丝合缝)
+                    const dx = Math.abs(p1.x - p2.x);
+                    const dy = Math.abs(p1.y - p2.y);
+                    const dz = Math.abs(p1.z - p2.z);
+                    
+                    const idealX = (s1.x + s2.x)/2;
+                    const idealY = (s1.y + s2.y)/2;
+                    const idealZ = (s1.z + s2.z)/2;
+                    
+                    const eps = 0.05; // 极小误差
+                    let area = 0;
+
+                    // X轴紧贴
+                    if (Math.abs(dx - idealX) < eps && dy < eps && dz < eps) {
+                        area = s1.y * s1.z; // 接触面 Y*Z
+                    }
+                    // Y轴紧贴
+                    else if (Math.abs(dy - idealY) < eps && dx < eps && dz < eps) {
+                        area = s1.x * s1.z; // 接触面 X*Z
+                    }
+                    // Z轴紧贴
+                    else if (Math.abs(dz - idealZ) < eps && dx < eps && dy < eps) {
+                        area = s1.x * s1.y; // 接触面 X*Y
+                    }
+
+                    if (area > 0) {
+                        // 发现有效接触
+                        totalOverlapArea += area;
+                        contactCount++;
+                        adj[i].push(j);
+                        adj[j].push(i);
+
+                        // 高亮边缘
+                        b1.userData.edges.material.color.setHex(0xffffff);
+                        b1.userData.edges.material.opacity = 1.0;
+                        b2.userData.edges.material.color.setHex(0xffffff);
+                        b2.userData.edges.material.opacity = 1.0;
+                    }
+                }
+            }
+
+            // 4. 检查连通性 (BFS)
+            const visited = new Set();
+            const q = [0]; 
+            visited.add(0);
+            while(q.length) {
+                const u = q.shift();
+                for(const v of adj[u]) {
+                    if(!visited.has(v)) {
+                        visited.add(v);
+                        q.push(v);
+                    }
+                }
+            }
+
+            // 5. 更新 UI
+            const saved = totalOverlapArea * 2; // 两个面
+            const finalArea = CONFIG.TOTAL_SEPARATE - saved;
+
+            if (visited.size === 4) {
+                elDisplay.innerText = `总表面积: ${finalArea} cm²`;
+                elDisplay.className = "hud-main success";
+                elDetail.innerText = `(拼搭成功 | 减少面积: ${saved} cm²)`;
+            } else {
+                elDisplay.innerText = "等待拼合...";
+                elDisplay.className = "hud-main";
+                elDetail.innerText = `(当前连接组件数: ${visited.size}/4 | 减少: ${saved})`;
+            }
+        }
+
+        // 全局重置函数
+        window.resetScene = function() {
+            boxes.forEach((box, i) => {
+                const init = boxInitialStates[i];
+                box.position.copy(init.pos);
+                box.rotation.copy(init.rot);
+                box.userData.orientation = 0;
+                control.detach();
+            });
+            updateCalculation();
+        };
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        window.addEventListener('resize', onWindowResize);
+
+        function animate() {
+            requestAnimationFrame(animate);
+            orbit.update();
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
